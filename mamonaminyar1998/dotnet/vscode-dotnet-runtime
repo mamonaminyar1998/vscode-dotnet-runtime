@@ -1,0 +1,13 @@
+# Project Title
+
+**TL;DR**: One-line summary of what this project does and why it matters.
+
+## Problem
+Two to three sentences describing the problem this solves.
+
+## Minimal Example
+```bash
+# clone and run
+git clone https://github.com/your-org/your-repo.git
+cd your-repo
+dotnet run --project src/ExampleProject
