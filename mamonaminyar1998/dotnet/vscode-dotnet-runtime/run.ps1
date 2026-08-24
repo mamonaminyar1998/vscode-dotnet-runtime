@@ -1,39 +1,34 @@
 <#
   run.ps1
-  Enhanced script to automate cloning/updating the repository and running a .NET project.
+  Local-first script to run a .NET project with optional npm steps, background execution, and timestamped log rotation.
 
-  Features added per request:
-  - Pre-filled project path
-  - Option to skip cloning or run a local project only
-  - Optional npm steps (install/build) before running dotnet
-  - Optional background execution for dotnet run
-  - Enhanced logging to a run.log file
+  Changes made:
+  - Default to LocalOnly mode (do not clone the remote repo by default)
+  - Default Destination and Project set to your project folder
+  - Timestamped log rotation: existing run.log is archived to run-YYYYMMDD-HHMMSS.log at start
+  - Retains npm, background, and logging features
 
-  Usage examples:
-    # Default: clone/update repo, find .csproj inside pre-filled project path and run it
+  Usage examples (all copy/paste):
+    # Default (local-only): run project in C:\AIBAK-SMART-HOSPITAL\ayback_10bed_surgery_hospital
     .\run.ps1
 
-    # Run a local project only (no cloning) and run npm steps before dotnet
-    .\run.ps1 -LocalOnly -Project "C:\AIBAK-SMART-HOSPITAL\ayback_10bed_surgery_hospital" -RunNpm -NpmInstall -NpmBuild "npm run compile"
+    # Explicit local-only with csproj file
+    .\run.ps1 -LocalOnly -Project "C:\AIBAK-SMART-HOSPITAL\ayback_10bed_surgery_hospital\YourApp\YourApp.csproj"
 
-    # Clone/update repo but skip cloning step explicitly
-    .\run.ps1 -SkipClone
+    # Run npm install + build then run dotnet in foreground
+    .\run.ps1 -RunNpm -NpmInstall -NpmBuild "npm run compile"
 
-    # Run dotnet in the background
-    .\run.ps1 -Background
+    # Run dotnet in background and enable logging (log will rotate with timestamp)
+    .\run.ps1 -Background -EnableLogging
 
-    # Enable logging to run.log
-    .\run.ps1 -EnableLogging
-
-    # Full example: clone, run npm install+build, run dotnet in background and enable logging
-    .\run.ps1 -RunNpm -NpmInstall -NpmBuild "npm run compile" -Background -EnableLogging
+    # Check rotated logs: Get-ChildItem -Path "C:\AIBAK-SMART-HOSPITAL\ayback_10bed_surgery_hospital\run-*.log"
 #>
 
 param(
-    [string]$Destination = "$env:USERPROFILE\source\repos\vscode-dotnet-runtime",
+    [string]$Destination = 'C:\AIBAK-SMART-HOSPITAL\ayback_10bed_surgery_hospital',
     [string]$Project = 'C:\AIBAK-SMART-HOSPITAL\ayback_10bed_surgery_hospital',
     [switch]$SkipClone,
-    [switch]$LocalOnly,
+    [switch]$LocalOnly = $true,
     [switch]$EnableLogging,
     [switch]$Background,
     [switch]$RunNpm,
@@ -60,7 +55,30 @@ function Log {
     Write-Host $line
 }
 
-Log "Starting run.ps1 (Project=$Project, Destination=$Destination)"
+function Rotate-Log {
+    param([string]$filePath)
+    if (-not (Test-Path $filePath)) { return }
+    try {
+        $info = Get-Item $filePath
+        if ($info.Length -gt 0) {
+            $ts = Get-Date -Format 'yyyyMMdd-HHmmss'
+            $archived = Join-Path -Path ($info.DirectoryName) -ChildPath ("run-$ts.log")
+            Move-Item -Path $filePath -Destination $archived -Force
+            Write-Host "Rotated log to $archived"
+        } else {
+            # empty file => just remove it
+            Remove-Item -Path $filePath -Force
+        }
+    } catch {
+        Write-Warning "Log rotation failed: $_"
+    }
+}
+
+Log "Starting run.ps1 (LocalOnly=$LocalOnly, Project=$Project, Destination=$Destination)"
+
+if ($EnableLogging) {
+    Rotate-Log -filePath $logFile
+}
 
 if (-not $LocalOnly) {
     if (-not $SkipClone) {
@@ -94,10 +112,11 @@ if (-not $LocalOnly) {
         exit 1
     }
     # If Project is a file, set location to its parent; if directory use it
-    if ((Get-Item $Project).PSIsContainer) {
-        Set-Location $Project
+    $projItem = Get-Item $Project
+    if ($projItem.PSIsContainer) {
+        Set-Location $projItem.FullName
     } else {
-        Set-Location (Split-Path -Path $Project -Parent)
+        Set-Location (Split-Path -Path $projItem.FullName -Parent)
     }
     Log "LocalOnly mode: working directory set to $(Get-Location)"
 }
@@ -130,7 +149,6 @@ function Find-CsProj {
     }
 }
 
-# If Project points to a csproj inside the cloned repo, it may be a full path; use it
 $csproj = Find-CsProj -path $Project
 
 if ($null -eq $csproj) {
@@ -146,10 +164,8 @@ Log "Found project: $csprojPath"
 
 # Optionally run npm steps before dotnet
 if ($RunNpm) {
-    # Determine npm working directory: prefer the csproj's directory if the node project lives alongside, otherwise repo root
     $npmDir = Split-Path -Path $csprojPath -Parent
     if (-not (Test-Path (Join-Path $npmDir 'package.json'))) {
-        # fallback to repo root
         $npmDir = Get-Location
     }
 
@@ -163,7 +179,6 @@ if ($RunNpm) {
 
     if (-not [string]::IsNullOrWhiteSpace($NpmBuild)) {
         Log "Running build command: $NpmBuild"
-        # Split the build string to command and args for Start-Process
         $buildParts = $NpmBuild -split ' '
         $cmd = $buildParts[0]
         $args = $buildParts[1..($buildParts.Length-1)] -join ' '
@@ -171,7 +186,6 @@ if ($RunNpm) {
             npm $args
             if ($LASTEXITCODE -ne 0) { Log "npm build failed with code $LASTEXITCODE"; Pop-Location; exit $LASTEXITCODE }
         } else {
-            # run generic command
             & $cmd $args
             if ($LASTEXITCODE -ne 0) { Log "build command failed with code $LASTEXITCODE"; Pop-Location; exit $LASTEXITCODE }
         }
@@ -185,6 +199,7 @@ if ($Background) {
     Log "Starting dotnet in background: dotnet $dotnetArgs"
     $proc = Start-Process -FilePath 'dotnet' -ArgumentList $dotnetArgs -PassThru -WindowStyle Hidden
     Log "Background process started. PID: $($proc.Id)"
+    if ($EnableLogging) { Log "Background process logging to $logFile" }
     exit 0
 } else {
     Log "Running foreground: dotnet $dotnetArgs"
